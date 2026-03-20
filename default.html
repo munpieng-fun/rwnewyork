@@ -2,10 +2,223 @@
 
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
-    <meta charset="utf-8" />
-    <title></title>
+    <meta charset="UTF-8">
+    <title>Flight Display</title>
+    <style>
+        body {
+            background: black;
+            color: #0f0;
+            font-family: monospace;
+            font-size: 18px;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        #screen {
+            white-space: pre;
+            padding: 10px;
+        }
+
+        .blink {
+            animation: blink 1s steps(2, start) infinite;
+        }
+
+        @keyframes blink {
+            to {
+                visibility: hidden;
+            }
+        }
+    </style>
 </head>
 <body>
-    Hello world
+    <div id="screen"></div>
+
+    <script>
+        const WIDTH = 65;
+        const HEIGHT = 15;
+        const PAGE_DURATION = 60000;
+        const TOGGLE_INTERVAL = 5000;
+        const SCROLL_INTERVAL = 500;
+
+        let flights = [];
+        let pages = [];
+        let currentPage = 0;
+        let started = false;
+
+        function parseFlight(str) {
+            const [flight, dest, time, gate, counter, status] = str.split('#');
+            return { flight, dest, time, gate, counter, status };
+        }
+
+        function groupFlights(list) {
+            const map = new Map();
+            list.forEach(f => {
+                const key = `${f.dest}|${f.time}|${f.gate}`;
+                if (!map.has(key)) map.set(key, []);
+                map.get(key).push(f);
+            });
+            return Array.from(map.values());
+        }
+
+        function sortFlights(list) {
+            return list.sort((a, b) => b[0].time.localeCompare(a[0].time));
+        }
+
+        function paginate(groups) {
+            const pages = [];
+            for (let i = 0; i < groups.length; i += HEIGHT) {
+                pages.push(groups.slice(i, i + HEIGHT));
+            }
+            return pages;
+        }
+
+        function formatLine(group, toggleIndex, scrollOffsets) {
+            const f = group[toggleIndex % group.length];
+
+            let dest = f.dest;
+            if (dest.length > 20) {
+                let offset = scrollOffsets.get(group) || 0;
+                const padded = dest + "    " + dest;
+                if (offset > dest.length)
+                    dest = padded.substring(dest.length, dest.length + 20);
+                else
+                    dest = padded.substring(offset, offset + 20);
+            } else {
+                dest = dest.padEnd(20, ' ');
+            }
+
+            const flight = f.flight.padEnd(8, ' ');
+            const time = (f.time || '').padEnd(6, ' ');
+            const gate = (f.gate || '').padEnd(5, ' ');
+            const counter = (f.counter || '').padEnd(10, ' ');
+            let status = (f.status || '');
+
+            let line = `${flight}  ${dest}  ${time}  ${gate}  ${counter}  ${status}`;
+
+            return { line, status };
+        }
+
+        let toggleIndex = 0;
+        let scrollOffsets = new Map();
+
+        function render() {
+            if (!started) return;
+
+            const screen = document.getElementById('screen');
+            let output = "FLIGHT   DESTINATION          TIME   GATE COUNTER     STATUS\n";
+            if (flights == null) {
+                screen.innerHTML = '<img src="https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/379720/header.jpg?t=1750784856">';
+                return;
+            }
+
+            const page = pages[currentPage] || [];
+
+            page.forEach(group => {
+                if (!scrollOffsets.has(group)) scrollOffsets.set(group, 0);
+
+                const { line, status } = formatLine(group, toggleIndex, scrollOffsets);
+
+                if (["BOARDING", "DELAYED", "CANCELLED"].includes(status)) {
+                    output += `<span class="blink">${line}</span>\n`;
+                } else {
+                    output += line + "\n";
+                }
+            });
+
+            screen.innerHTML = output;
+        }
+
+        setInterval(() => {
+            toggleIndex++;
+            render();
+        }, TOGGLE_INTERVAL);
+
+        setInterval(() => {
+            scrollOffsets.forEach((v, k) => {
+                const max = k[0].dest.length + 4;
+                scrollOffsets.set(k, (v + 1) % max);
+            });
+            render();
+        }, SCROLL_INTERVAL);
+
+        setInterval(() => {
+            currentPage = (currentPage + 1) % pages.length;
+            render();
+        }, PAGE_DURATION);
+
+        function rebuild() {
+            const groups = sortFlights(groupFlights(flights));
+            pages = paginate(groups);
+            currentPage = 0;
+            render();
+        }
+
+        function processCommand(line) {
+            if (!line.trim()) return;
+
+            const [cmd, params] = line.split('*');
+
+            if (cmd === 'FULL') {
+                flights = params ? params.split('&').map(parseFlight) : [];
+                started = true;
+                rebuild();
+            } else if (!started) {
+                return;
+            } else if (cmd === 'ADD') {
+                const newFlights = params.split('&').map(parseFlight);
+                flights.push(...newFlights);
+                rebuild();
+            } else if (cmd === 'BOARD') {
+                flights.forEach(f => { if (f.flight === params) f.status = 'BOARDING'; });
+                render();
+            } else if (cmd === 'DEPART') {
+                flights.forEach(f => { if (f.flight === params) f.status = 'DEPARTED'; });
+                render();
+            } else if (cmd === 'CANCEL') {
+                flights.forEach(f => { if (f.flight === params) f.status = 'CANCELLED'; });
+                render();
+            } else if (cmd === 'DELAY') {
+                const [flight, time] = params.split('#');
+                flights.forEach(f => {
+                    if (f.flight === flight) {
+                        f.time = time;
+                        f.status = 'DELAYED';
+                    }
+                });
+                rebuild();
+            } else if (cmd === 'COUNTER') {
+                const [flight, counter] = params.split('#');
+                flights.forEach(f => {
+                    if (f.flight === flight) f.counter = counter;
+                });
+                render();
+            } else if (cmd === 'GATE') {
+                const [flight, gate] = params.split('#');
+                flights.forEach(f => {
+                    if (f.flight === flight) f.gate = gate;
+                });
+                rebuild();
+            } else if (cmd === 'IDDQD') {
+                flights = null;
+            }
+        }
+
+        // Simulated stdin using textarea (replace with real stream in production)
+        const input = document.createElement('textarea');
+        input.id = 'stdin'
+        input.style.position = 'absolute';
+        input.style.bottom = '0';
+        input.style.width = '100%';
+        input.placeholder = 'Paste or type control system input here... End input with newline to process...';
+        document.body.appendChild(input);
+
+        input.addEventListener('input', () => {
+            if (input.value.endsWith('\n')) {
+                const lines = input.value.split('\n');
+                lines.forEach(processCommand);
+                input.value = '';
+            }
+        });
+    </script>
 </body>
 </html>
